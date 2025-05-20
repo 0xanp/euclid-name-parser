@@ -21,7 +21,6 @@ if not GEMINI_API_KEY or not OPENAI_API_KEY:
     st.error("Missing Gemini or OpenAI API key. Please set in .env or Streamlit secrets.")
     st.stop()
 
-genai.configure(api_key=GEMINI_API_KEY)
 openai.api_key = OPENAI_API_KEY
 
 MODEL_NAME_GEMINI = "models/gemini-2.5-pro-preview-05-06"
