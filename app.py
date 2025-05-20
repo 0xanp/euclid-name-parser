@@ -1,7 +1,8 @@
 import os
 import pandas as pd
 import streamlit as st
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 import openai
 import io
 from dotenv import load_dotenv
@@ -36,21 +37,33 @@ def load_existing_parsed():
 
 @retry(wait=wait_exponential(multiplier=2, min=5, max=30), stop=stop_after_attempt(3))
 def generate_with_gemini(prompt_text):
-    llm = genai.GenerativeModel(
-        MODEL_NAME_GEMINI,
-        generation_config=genai.types.GenerationConfig(
-            temperature=0.0,
-            max_output_tokens=2048
-        )
+    import os
+    from google import genai
+    from google.genai import types
+
+    api_key = os.environ.get("GEMINI_API_KEY")
+    if "GEMINI_API_KEY" in st.secrets:
+        api_key = st.secrets["GEMINI_API_KEY"]
+    client = genai.Client(api_key=api_key)
+    model = "gemini-2.5-flash-preview-04-17"
+
+    contents = [
+        types.Content(
+            role="user",
+            parts=[types.Part.from_text(text=prompt_text)],
+        ),
+    ]
+    config = types.GenerateContentConfig(response_mime_type="text/plain")
+
+    response = client.models.generate_content(
+        model=model,
+        contents=contents,
+        config=config,
     )
-    response = llm.generate_content(prompt_text)
-    if hasattr(response, "parts") and response.parts:
-        return "".join(part.text for part in response.parts if hasattr(part, "text"))
-    elif hasattr(response, "text"):
-        return response.text
-    elif hasattr(response, "candidates"):
-        return response.candidates[0].content.parts[0].text
-    return ""
+    text = getattr(response, "text", None)
+    if not text and hasattr(response, "candidates"):
+        text = response.candidates[0].text
+    return text or ""
 
 @retry(wait=wait_exponential(multiplier=2, min=5, max=30), stop=stop_after_attempt(3))
 def generate_with_gpt(prompt_text):
