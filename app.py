@@ -206,7 +206,14 @@ if input_method == "Paste names":
             with st.spinner("Classifying names..."):
                 results_df = classify_and_audit(names)
                 if address_lookup_available:
-                    results_df = pd.merge(results_df, existing_data, left_on="Name", right_on="OwnerName", how="left")
+                    results_df = pd.merge(
+                    results_df,
+                    existing_data,
+                    left_on="Name",
+                    right_on="OwnerName",
+                    how="left",
+                    suffixes=("", "_lookup")  # Only add suffix to the columns from the lookup file
+                )
                 # Key columns to show (update as fits your CSV schema)
                 address_cols = [
                     "OwnerAddress1", "OwnerAddress2", "OwnerAddress3", "OwnerCity", "OwnerState", "OwnerZipCode", "PropertyAmount", "OwnerRelation"
@@ -214,7 +221,7 @@ if input_method == "Paste names":
                 existing_cols = [col for col in address_cols if col in results_df.columns]
                 core_cols = ["Name", "Type", "FirstName", "MiddleName", "LastName"]
                 cols_to_show = core_cols + existing_cols
-                #cols_to_show = [col for col in cols_to_show if col in results_df.columns]
+                cols_to_show = [col for col in cols_to_show if col in results_df.columns]
                 
                 # Optionally add "FullAddress" if all address parts are present
                 if {"MailingAddress", "City", "State", "Zip"}.issubset(results_df.columns):
@@ -241,7 +248,14 @@ elif input_method == "Upload CSV":
         with st.spinner("Classifying names..."):
             results_df = classify_and_audit(names)
             if address_lookup_available:
-                results_df = pd.merge(results_df, existing_data, left_on="Name", right_on="OwnerName", how="left")
+                results_df = pd.merge(
+                results_df,
+                existing_data,
+                left_on="Name",
+                right_on="OwnerName",
+                how="left",
+                suffixes=("", "_lookup")  # Only add suffix to the columns from the lookup file
+            )
             # Key columns to show (update as fits your CSV schema)
             address_cols = [
                 "OwnerAddress1", "OwnerAddress2", "OwnerAddress3", "OwnerCity", "OwnerState", "OwnerZipCode", "PropertyAmount", "OwnerRelation"
@@ -249,7 +263,7 @@ elif input_method == "Upload CSV":
             existing_cols = [col for col in address_cols if col in results_df.columns]
             core_cols = ["Name", "Type", "FirstName", "MiddleName", "LastName"]
             cols_to_show = core_cols + existing_cols
-            #cols_to_show = [col for col in cols_to_show if col in results_df.columns]
+            cols_to_show = [col for col in cols_to_show if col in results_df.columns]
             
             # Optionally add "FullAddress" if all address parts are present
             if {"MailingAddress", "City", "State", "Zip"}.issubset(results_df.columns):
