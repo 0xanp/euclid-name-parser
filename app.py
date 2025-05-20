@@ -1,203 +1,215 @@
-import streamlit as st
-import pandas as pd
 import os
-import openai
+import pandas as pd
+import streamlit as st
 import google.generativeai as genai
+import openai
 import io
+from dotenv import load_dotenv
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-# --- CONFIGURATION ---
-PARSED_DATA = "parsed_names_gemini_gpt_final.csv"
-MODEL_GEMINI = "models/gemini-2.0-flash-lite"
-MODEL_GPT = "gpt-4.1-nano"
-BATCH_SIZE = 25
-MAX_ATTEMPTS_API = 5
-MAX_RETRY_ROUNDS = 2
-OWNER_COL = "OwnerName"
+# --- LOAD SECRETS / ENV ---
+if "GEMINI_API_KEY" in st.secrets:
+    GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
+    OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
+else:
+    load_dotenv()
+    GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+    OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 
-# --- API KEYS (Streamlit Cloud: Set in Secrets) ---
-GEMINI_API_KEY = st.secrets["GEMINI_API_KEY"]
-OPENAI_API_KEY = st.secrets["OPENAI_API_KEY"]
-openai.api_key = OPENAI_API_KEY
+if not GEMINI_API_KEY or not OPENAI_API_KEY:
+    st.error("Missing Gemini or OpenAI API key. Please set in .env or Streamlit secrets.")
+    st.stop()
+
 genai.configure(api_key=GEMINI_API_KEY)
+openai.api_key = OPENAI_API_KEY
 
-# --- Gemini + OpenAI model instances ---
-generation_config = genai.types.GenerationConfig(
-    temperature=0.0,
-    max_output_tokens=2048
-)
-gemini_llm = genai.GenerativeModel(
-    MODEL_GEMINI,
-    generation_config=generation_config
-)
+MODEL_NAME_GEMINI = "models/gemini-2.0-flash-lite"
+MODEL_NAME_GPT = "gpt-4.1-nano"
+BATCH_SIZE = 50  # lower for interactive app
 
-def load_parsed_data():
-    return pd.read_csv(PARSED_DATA, dtype=str).fillna("")
+@st.cache_resource
+def load_existing_parsed():
+    # Assume you have uploaded your "parsed_names_gemini_gpt_final.csv" to the app
+    # Or provide a public URL
+    try:
+        return pd.read_csv("parsed_names_gemini_gpt_final.csv", dtype=str, low_memory=False).fillna("")
+    except Exception:
+        return pd.DataFrame()
+
+@retry(wait=wait_exponential(multiplier=2, min=5, max=30), stop=stop_after_attempt(3))
+def generate_with_gemini(prompt_text):
+    llm = genai.GenerativeModel(
+        MODEL_NAME_GEMINI,
+        generation_config=genai.types.GenerationConfig(
+            temperature=0.0,
+            max_output_tokens=2048
+        )
+    )
+    response = llm.generate_content(prompt_text)
+    if hasattr(response, "parts") and response.parts:
+        return "".join(part.text for part in response.parts if hasattr(part, "text"))
+    elif hasattr(response, "text"):
+        return response.text
+    elif hasattr(response, "candidates"):
+        return response.candidates[0].content.parts[0].text
+    return ""
+
+@retry(wait=wait_exponential(multiplier=2, min=5, max=30), stop=stop_after_attempt(3))
+def generate_with_gpt(prompt_text):
+    resp = openai.chat.completions.create(
+        model=MODEL_NAME_GPT,
+        messages=[{"role": "user", "content": prompt_text}],
+        temperature=0,
+        max_tokens=1800
+    )
+    return resp.choices[0].message.content.strip()
 
 def get_classification_prompt(names_batch):
     names_str = "\n".join(names_batch)
     prompt = (
-        "You are an expert at name classification and splitting.\n"
-        "For each of the following names, classify as 'Person' or 'Business'.\n"
-        "If 'Person', split into First, Middle (if any), and Last name (all caps, order as in input; beware: name order may be Last First Middle, First Last, or First Middle Last; DO NOT ASSUME order!).\n"
-        "If unsure, classify as Business (put full name in LastName, other fields empty).\n"
-        "NEVER output markdown/code blocks or explanations—PLAIN CSV ONLY: Name,Type,FirstName,MiddleName,LastName.\n"
-        "If field is missing, use \"\".\n"
-        "Examples:\n"
+        "You are an expert at US name classification and splitting.\n"
+        "For each of the following names:\n"
+        "- Classify as 'Person' or 'Business'.\n"
+        "- If 'Person', provide First, Middle (if any), and Last names. ENSURE THE CORRECT ORDER.\n"
+        "    - Handle all possible orders: LAST FIRST MIDDLE, FIRST LAST, FIRST MIDDLE LAST, FIRST LAST SUFFIX.\n"
+        "    - If not absolutely certain, classify as 'Business' and put the full name in LastName.\n"
+        "- If 'Business', put the entire name in the 'LastName' column and 'Business' in 'Type'. Leave 'FirstName' and 'MiddleName' empty.\n"
+        "- If a field is missing, ALWAYS use empty string \"\" (never nan/null/N/A/none).\n"
+        "- KEEP THE 'Name' FIELD EXACTLY AS INPUT, INCLUDING ALL UPPERCASE and punctuation.\n"
+        "- NEVER output markdown/code blocks or explanations—only plain CSV.\n"
+        "- If the input has more than three words, treat as 'Business' unless it is clearly a person name.\n"
+        "- If the input contains business indicators like INC, LLC, CORP, CO, COMPANY, BANK, ESTATE, TRUST, GROUP, AND, &, or numbers, classify as Business unless a clear person pattern is detected.\n"
+        "- For one-word names, classify as Business unless it matches a common US person last name (e.g. SMITH, JOHNSON, WILLIAMS).\n"
+        "Output a CSV with these headers: Name,Type,FirstName,MiddleName,LastName\n"
+        "EXAMPLES:\n"
         "SMITH,Person,,,SMITH\n"
         "DOE JANE,Person,JANE,,DOE\n"
         "BROWN JOHN Q JR,Person,JOHN,Q JR,BROWN\n"
+        "MC DONALD,Person,,,MC DONALD\n"
         "CAFÉ DEL MAR,Business,,,CAFÉ DEL MAR\n"
         "THE SMITH COMPANY,Business,,,THE SMITH COMPANY\n"
+        "MAMA FUS NOODLE HOUSE,Business,,,MAMA FUS NOODLE HOUSE\n"
+        "SMALLS WILLIE R,Person,WILLIE,R,SMALLS\n"
+        "GARRETT ALDA ESTATE & HEIRS,Business,,,GARRETT ALDA ESTATE & HEIRS\n"
+        "PIERCE & YOUNG ATTORNEYS AT LAW,Business,,,PIERCE & YOUNG ATTORNEYS AT LAW\n"
+        "Reply as a CSV with exactly these headers as the first row: Name,Type,FirstName,MiddleName,LastName\n"
+        "Do not output any other text or explanations.\n\n"
         f"{names_str}"
     )
     return prompt
 
-def get_gpt_audit_prompt(entries):
-    batch_str = "\n".join(entries)
+def get_audit_prompt(audit_lines):
+    names_str = "\n".join(audit_lines)
     prompt = (
-        "You are an expert at US name splitting and business detection.\n"
-        "For each CSV entry: Name,Type,FirstName,MiddleName,LastName\n"
-        "Audit split, keeping fields as is if correct; if incorrect or ambiguous, re-split cautiously (permutations possible: Last First, First Last, First Middle Last, First Last Middle).\n"
-        "If not a person, Type should be Business and all names except LastName must be blank. If ambiguous or more than 4 name words, classify as Business.\n"
-        "Plain CSV ONLY: Name,Type,FirstName,MiddleName,LastName. No explanations.\n"
-        f"{batch_str}"
+        "You are an expert at US name classification and splitting.\n"
+        "For each entry below (OriginalName,CurrentType,CurrentFirstName,CurrentMiddleName,CurrentLastName):\n"
+        "- If 'CurrentType' is 'Person' but the split is not plausible (wrong order, business words in person fields, more than 4 words, or wrong permutation), re-split. Be cautious about all possible orders: LAST FIRST, FIRST LAST, FIRST MIDDLE LAST, etc. If not certain, classify as Business.\n"
+        "- If 'CurrentType' is 'Business' but it looks like a person, change to Person and split.\n"
+        "- If 'CurrentType' starts with 'Unknown', try to classify and split accordingly.\n"
+        "- KEEP THE Name field EXACTLY as input. For missing fields, always use \"\" (never nan/null/N/A/none).\n"
+        "- Output CSV ONLY with these headers: Name,Type,FirstName,MiddleName,LastName\n"
+        "- NEVER output markdown/code blocks or explanations.\n\n"
+        f"{names_str}"
     )
     return prompt
 
-@retry(wait=wait_exponential(multiplier=2, min=5, max=60), stop=stop_after_attempt(MAX_ATTEMPTS_API))
-def gemini_generate(prompt_text):
-    response = gemini_llm.generate_content(prompt_text)
-    text_response = ""
-    if hasattr(response, "parts") and response.parts:
-        text_response = "".join(part.text for part in response.parts if hasattr(part, "text"))
-    elif hasattr(response, "text"):
-        text_response = response.text
-    else:
-        try:
-            text_response = response.candidates[0].content.parts[0].text
-        except Exception:
-            text_response = ""
-    return text_response.strip()
+def parse_csv_response(csv_text, expected_headers):
+    if not csv_text:
+        return pd.DataFrame(columns=expected_headers)
+    try:
+        lines = csv_text.strip().splitlines()
+        if lines and lines[0].strip().startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].strip() == "```":
+            lines = lines[:-1]
+        clean_csv_text = "\n".join(lines)
+        data = io.StringIO(clean_csv_text)
+        df = pd.read_csv(data, dtype=str, on_bad_lines='warn')
+        df.columns = [str(col).strip().replace('"', '').replace("'", "") for col in df.columns]
+        for col in expected_headers:
+            df[col] = df.get(col, "").fillna("").replace(["nan", "NaN", "N/A", "na", "null", "None"], "")
+        if list(df.columns) == expected_headers:
+            pass
+        elif all(eh in df.columns for eh in expected_headers):
+            df = df[expected_headers]
+        elif len(df.columns) == len(expected_headers):
+            df.columns = expected_headers
+        else:
+            st.warning(f"Critical Warning: CSV headers mismatch. Showing partial results.")
+            return pd.DataFrame(columns=expected_headers)
+        return df
+    except Exception as e:
+        st.warning(f"Error parsing CSV response: {e}")
+        return pd.DataFrame(columns=expected_headers)
 
-@retry(wait=wait_exponential(multiplier=2, min=5, max=60), stop=stop_after_attempt(MAX_ATTEMPTS_API))
-def gpt_generate(prompt_text):
-    response = openai.chat.completions.create(
-        model=MODEL_GPT,
-        messages=[{"role": "user", "content": prompt_text}],
-        temperature=0,
-        max_tokens=1024,
-    )
-    return response.choices[0].message.content.strip()
-
-def parse_llm_csv(csv_text, expected_headers):
-    # Remove markdown code blocks if present
-    lines = csv_text.strip().splitlines()
-    if lines and lines[0].strip().startswith("```"):
-        lines = lines[1:]
-    if lines and lines[-1].strip() == "```":
-        lines = lines[:-1]
-    clean_csv_text = "\n".join(lines)
-    data = io.StringIO(clean_csv_text)
-    df = pd.read_csv(data, dtype=str, on_bad_lines='warn')
-    df.columns = [str(col).strip().replace('"', '').replace("'", "") for col in df.columns]
-    # Standardize columns
-    for col in expected_headers:
-        if col not in df.columns:
-            df[col] = ""
-    df = df[expected_headers]
-    df = df.fillna("")
-    for col in expected_headers:
-        df[col] = df[col].replace(["nan", "NaN", "N/A", "na", "null", "None"], "")
-    return df
-
-def classify_with_gemini(name_list):
-    # Batching
+def classify_and_audit(names_batch):
     expected_headers = ["Name", "Type", "FirstName", "MiddleName", "LastName"]
-    results = []
-    for i in range(0, len(name_list), BATCH_SIZE):
-        batch = name_list[i:i+BATCH_SIZE]
-        prompt = get_classification_prompt(batch)
-        csv_text = gemini_generate(prompt)
-        df = parse_llm_csv(csv_text, expected_headers)
-        results.append(df)
-    out_df = pd.concat(results, ignore_index=True).fillna("")
-    return out_df
+    # 1. Gemini LLM classification
+    prompt = get_classification_prompt(names_batch)
+    csv_response = generate_with_gemini(prompt)
+    df_llm = parse_csv_response(csv_response, expected_headers)
+    # 2. Audit with GPT (if needed)
+    needs_audit = []
+    for _, row in df_llm.iterrows():
+        if (
+            str(row["Type"]).startswith("Unknown")
+            or (row["Type"] == "Person" and (row["FirstName"] == "" or row["LastName"] == ""))
+            or any(str(row.get(c, "")).lower() in ["nan", "n/a", "null", "none"] for c in ["FirstName", "MiddleName", "LastName"])
+        ):
+            needs_audit.append(",".join([
+                row["Name"], row["Type"], row["FirstName"] or "", row["MiddleName"] or "", row["LastName"] or ""
+            ]))
+    if needs_audit:
+        audit_prompt = get_audit_prompt(needs_audit)
+        audit_response = generate_with_gpt(audit_prompt)
+        df_audit = parse_csv_response(audit_response, expected_headers)
+        # Overwrite suspicious splits with audit splits
+        for _, row in df_audit.iterrows():
+            name = row.get("Name", "")
+            if name in df_llm["Name"].values:
+                df_llm.loc[df_llm["Name"] == name, ["Type", "FirstName", "MiddleName", "LastName"]] = [
+                    row.get("Type", ""),
+                    row.get("FirstName", ""),
+                    row.get("MiddleName", ""),
+                    row.get("LastName", ""),
+                ]
+    return df_llm
 
-def audit_with_gpt(df_persons):
-    # Audit only Type=Person, or those with empty/missing split
-    expected_headers = ["Name", "Type", "FirstName", "MiddleName", "LastName"]
-    mask_audit = (df_persons["Type"] == "Person") & (
-        (df_persons["FirstName"] == "") | (df_persons["LastName"] == "") |
-        (df_persons["Name"].str.split().str.len() > 4)
-    )
-    if not mask_audit.any():
-        return df_persons
-    audit_df = df_persons[mask_audit].copy()
-    entries = []
-    for _, row in audit_df.iterrows():
-        fields = [row["Name"], row["Type"], row["FirstName"], row["MiddleName"], row["LastName"]]
-        entries.append(",".join(fields))
-    results = []
-    for i in range(0, len(entries), BATCH_SIZE):
-        batch = entries[i:i+BATCH_SIZE]
-        prompt = get_gpt_audit_prompt(batch)
-        csv_text = gpt_generate(prompt)
-        df_batch = parse_llm_csv(csv_text, expected_headers)
-        results.append(df_batch)
-    audited_df = pd.concat(results, ignore_index=True).fillna("")
-    # Update main df
-    df_persons_update = df_persons.set_index("Name")
-    for _, row in audited_df.iterrows():
-        df_persons_update.loc[row["Name"], ["Type", "FirstName", "MiddleName", "LastName"]] = \
-            row[["Type", "FirstName", "MiddleName", "LastName"]].values
-    df_persons_update = df_persons_update.reset_index()
-    return df_persons_update
+# --- STREAMLIT UI ---
+st.title("Name Split & Type Classifier (LLM-powered)")
 
-def lookup_address(df_classified, df_parsed):
-    # Merge on Name to get address fields
-    address_fields = [c for c in df_parsed.columns if "address" in c.lower()]
-    df_merged = pd.merge(df_classified, df_parsed[[OWNER_COL]+address_fields], left_on="Name", right_on=OWNER_COL, how="left")
-    return df_merged
+existing_data = load_existing_parsed()
+address_lookup_available = not existing_data.empty
 
-# --- STREAMLIT APP ---
-st.set_page_config(page_title="Name Classification & Address Lookup", layout="wide")
-st.title("Name Classification, Person Split & Address Lookup")
-st.write("Input a list of names (paste or upload), run multi-layer LLM classification, and get address lookup.")
+st.write("Paste or upload a list of names. The app will classify as Person/Business and split (if Person), then audit with GPT-4.1-nano for extra accuracy. If available, address info from existing data will be shown.")
 
-# User input
-with st.form("name_input"):
-    input_method = st.radio("Input names by:", ["Paste/Type", "Upload .csv or .txt"])
-    name_list = []
-    if input_method == "Paste/Type":
-        user_input = st.text_area("Enter names (one per line):", height=200)
-        if user_input:
-            name_list = [line.strip().upper() for line in user_input.splitlines() if line.strip()]
-    else:
-        uploaded_file = st.file_uploader("Upload a .csv or .txt file (one name per row):")
-        if uploaded_file:
-            ext = uploaded_file.name.split(".")[-1].lower()
-            if ext == "csv":
-                df_up = pd.read_csv(uploaded_file, header=None)
-                name_list = df_up[0].astype(str).str.upper().tolist()
-            else:
-                name_list = [line.decode("utf-8").strip().upper() for line in uploaded_file.readlines() if line.strip()]
-    submit = st.form_submit_button("Run Classification")
+input_method = st.radio("Input method", ["Paste names", "Upload CSV"])
 
-if submit and name_list:
-    st.info(f"Processing {len(name_list)} names via Gemini…")
-    # 1. Classify/split with Gemini
-    df_classified = classify_with_gemini(name_list)
-    # 2. Audit with GPT-4.1-nano for Person splits with issues or >4 words
-    df_classified = audit_with_gpt(df_classified)
-    # 3. Address lookup
-    df_parsed = load_parsed_data()
-    df_out = lookup_address(df_classified, df_parsed)
-    # Reorder for best visibility
-    out_cols = ["Name", "Type", "FirstName", "MiddleName", "LastName"] + [c for c in df_out.columns if c not in ["Name", "Type", "FirstName", "MiddleName", "LastName", OWNER_COL]]
-    st.dataframe(df_out[out_cols].fillna("").replace("nan", ""))
-    # Download button
-    csv = df_out[out_cols].to_csv(index=False)
-    st.download_button("Download Results as CSV", csv, "name_classification_results.csv", "text/csv")
-else:
-    st.info("Awaiting input…")
+if input_method == "Paste names":
+    name_input = st.text_area("Enter names (one per line):")
+    if st.button("Classify and Split"):
+        names = [n.strip() for n in name_input.strip().split("\n") if n.strip()]
+        if names:
+            with st.spinner("Classifying names..."):
+                results_df = classify_and_audit(names)
+                if address_lookup_available:
+                    results_df = pd.merge(results_df, existing_data, left_on="Name", right_on="OwnerName", how="left")
+                st.dataframe(results_df)
+                csv_out = results_df.to_csv(index=False)
+                st.download_button("Download CSV results", csv_out, "classified_names.csv")
+        else:
+            st.warning("Please enter at least one name.")
+elif input_method == "Upload CSV":
+    file = st.file_uploader("Upload CSV file with a column of names", type="csv")
+    if file and st.button("Classify and Split"):
+        df = pd.read_csv(file, dtype=str)
+        # Guess the name column
+        name_col = st.selectbox("Select name column", list(df.columns))
+        names = df[name_col].dropna().astype(str).tolist()
+        with st.spinner("Classifying names..."):
+            results_df = classify_and_audit(names)
+            if address_lookup_available:
+                results_df = pd.merge(results_df, existing_data, left_on="Name", right_on="OwnerName", how="left")
+            st.dataframe(results_df)
+            csv_out = results_df.to_csv(index=False)
+            st.download_button("Download CSV results", csv_out, "classified_names.csv")
