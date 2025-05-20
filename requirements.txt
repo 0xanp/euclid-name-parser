@@ -1,6 +1,6 @@
 streamlit
 pandas
 openai
-google-generativeai
+google-genai
 tenacity
 python-dotenv
