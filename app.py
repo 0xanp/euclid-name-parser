@@ -29,8 +29,6 @@ BATCH_SIZE = 50  # lower for interactive app
 
 @st.cache_resource
 def load_existing_parsed():
-    # Assume you have uploaded your "parsed_names_gemini_gpt_final.csv" to the app
-    # Or provide a public URL
     try:
         return pd.read_csv("parsed_names_gemini_gpt_final.csv", dtype=str, low_memory=False).fillna("")
     except Exception:
@@ -103,7 +101,7 @@ def get_audit_prompt(audit_lines):
     prompt = (
         "You are an expert at US name classification and splitting.\n"
         "For each entry below (OriginalName,CurrentType,CurrentFirstName,CurrentMiddleName,CurrentLastName):\n"
-        "- If 'CurrentType' is 'Person' but the split is not plausible (wrong order, business words in person fields, more than 4 words, or wrong permutation), re-split. Be cautious about all possible orders: LAST FIRST, FIRST LAST, FIRST MIDDLE LAST, etc. If not certain, classify as Business.\n"
+        "- If 'CurrentType' is 'Person', audit the split even if it looks plausible. Check for wrong order, business words in person fields, more than 4 words, or wrong permutation, and re-split if needed. Be cautious about all possible orders: LAST FIRST, FIRST LAST, FIRST MIDDLE LAST, etc. If not certain, classify as Business.\n"
         "- If 'CurrentType' is 'Business' but it looks like a person, change to Person and split.\n"
         "- If 'CurrentType' starts with 'Unknown', try to classify and split accordingly.\n"
         "- KEEP THE Name field EXACTLY as input. For missing fields, always use \"\" (never nan/null/N/A/none).\n"
@@ -148,22 +146,18 @@ def classify_and_audit(names_batch):
     prompt = get_classification_prompt(names_batch)
     csv_response = generate_with_gemini(prompt)
     df_llm = parse_csv_response(csv_response, expected_headers)
-    # 2. Audit with GPT (if needed)
-    needs_audit = []
-    for _, row in df_llm.iterrows():
-        if (
-            str(row["Type"]).startswith("Unknown")
-            or (row["Type"] == "Person" and (row["FirstName"] == "" or row["LastName"] == ""))
-            or any(str(row.get(c, "")).lower() in ["nan", "n/a", "null", "none"] for c in ["FirstName", "MiddleName", "LastName"])
-        ):
-            needs_audit.append(",".join([
-                row["Name"], row["Type"], row["FirstName"] or "", row["MiddleName"] or "", row["LastName"] or ""
-            ]))
-    if needs_audit:
-        audit_prompt = get_audit_prompt(needs_audit)
+    # 2. ALWAYS audit every name with GPT, regardless of Gemini result
+    audit_lines = [
+        ",".join([
+            row["Name"], row["Type"], row["FirstName"] or "", row["MiddleName"] or "", row["LastName"] or ""
+        ])
+        for _, row in df_llm.iterrows()
+    ]
+    if audit_lines:
+        audit_prompt = get_audit_prompt(audit_lines)
         audit_response = generate_with_gpt(audit_prompt)
         df_audit = parse_csv_response(audit_response, expected_headers)
-        # Overwrite suspicious splits with audit splits
+        # Overwrite Gemini splits with audit splits
         for _, row in df_audit.iterrows():
             name = row.get("Name", "")
             if name in df_llm["Name"].values:
@@ -176,12 +170,12 @@ def classify_and_audit(names_batch):
     return df_llm
 
 # --- STREAMLIT UI ---
-st.title("Name Split & Type Classifier (LLM-powered)")
+st.title("Name Split & Type Classifier (Dual LLM Audit)")
 
 existing_data = load_existing_parsed()
 address_lookup_available = not existing_data.empty
 
-st.write("Paste or upload a list of names. The app will classify as Person/Business and split (if Person), then audit with GPT-4.1-nano for extra accuracy. If available, address info from existing data will be shown.")
+st.write("Paste or upload a list of names. Each name is classified (Person/Business) and split (if Person) using Gemini, then **always** re-audited with GPT-4.1-nano. Address info is included if found in pre-parsed data.")
 
 input_method = st.radio("Input method", ["Paste names", "Upload CSV"])
 
@@ -203,7 +197,6 @@ elif input_method == "Upload CSV":
     file = st.file_uploader("Upload CSV file with a column of names", type="csv")
     if file and st.button("Classify and Split"):
         df = pd.read_csv(file, dtype=str)
-        # Guess the name column
         name_col = st.selectbox("Select name column", list(df.columns))
         names = df[name_col].dropna().astype(str).tolist()
         with st.spinner("Classifying names..."):
