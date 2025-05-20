@@ -207,7 +207,27 @@ if input_method == "Paste names":
                 results_df = classify_and_audit(names)
                 if address_lookup_available:
                     results_df = pd.merge(results_df, existing_data, left_on="Name", right_on="OwnerName", how="left")
-                st.dataframe(results_df)
+                # Key columns to show (update as fits your CSV schema)
+                address_cols = [
+                    "OwnerAddress1", "OwnerAddress2", "OwnerAddress3", "OwnerCity", "OwnerState", "OwnerZipCode", "PropertyAmount", "OwnerRelation"
+                ]
+                existing_cols = [col for col in address_cols if col in results_df.columns]
+                core_cols = ["Name", "Type", "FirstName", "MiddleName", "LastName"]
+                cols_to_show = core_cols + existing_cols
+                cols_to_show = [col for col in cols_to_show if col in results_df.columns]
+                
+                # Optionally add "FullAddress" if all address parts are present
+                if {"MailingAddress", "City", "State", "Zip"}.issubset(results_df.columns):
+                    results_df["FullAddress"] = (
+                        results_df["MailingAddress"].fillna("") + ", " +
+                        results_df["City"].fillna("") + ", " +
+                        results_df["State"].fillna("") + " " +
+                        results_df["Zip"].fillna("")
+                    )
+                    cols_to_show.append("FullAddress")
+                
+                st.write(f"**Showing columns:** {', '.join(cols_to_show)}")
+                st.dataframe(results_df[cols_to_show])
                 csv_out = results_df.to_csv(index=False)
                 st.download_button("Download CSV results", csv_out, "classified_names.csv")
         else:
@@ -222,6 +242,27 @@ elif input_method == "Upload CSV":
             results_df = classify_and_audit(names)
             if address_lookup_available:
                 results_df = pd.merge(results_df, existing_data, left_on="Name", right_on="OwnerName", how="left")
-            st.dataframe(results_df)
+            # Key columns to show (update as fits your CSV schema)
+            address_cols = [
+                "OwnerAddress1", "OwnerAddress2", "OwnerAddress3", "OwnerCity", "OwnerState", "OwnerZipCode", "PropertyAmount", "OwnerRelation"
+            ]
+            existing_cols = [col for col in address_cols if col in results_df.columns]
+            core_cols = ["Name", "Type", "FirstName", "MiddleName", "LastName"]
+            cols_to_show = core_cols + existing_cols
+            cols_to_show = [col for col in cols_to_show if col in results_df.columns]
+            
+            # Optionally add "FullAddress" if all address parts are present
+            if {"MailingAddress", "City", "State", "Zip"}.issubset(results_df.columns):
+                results_df["FullAddress"] = (
+                    results_df["MailingAddress"].fillna("") + ", " +
+                    results_df["City"].fillna("") + ", " +
+                    results_df["State"].fillna("") + " " +
+                    results_df["Zip"].fillna("")
+                )
+                cols_to_show.append("FullAddress")
+            
+            st.write(f"**Showing columns:** {', '.join(cols_to_show)}")
+            st.dataframe(results_df[cols_to_show])
+
             csv_out = results_df.to_csv(index=False)
             st.download_button("Download CSV results", csv_out, "classified_names.csv")
