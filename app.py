@@ -23,8 +23,8 @@ if not GEMINI_API_KEY or not OPENAI_API_KEY:
 genai.configure(api_key=GEMINI_API_KEY)
 openai.api_key = OPENAI_API_KEY
 
-MODEL_NAME_GEMINI = "models/gemini-2.5-flash"
-MODEL_NAME_GPT = "gpt-4o"
+MODEL_NAME_GEMINI = "models/gemini-2.5-pro"
+MODEL_NAME_GPT = "gpt-4.1"
 BATCH_SIZE = 50  # lower for interactive app
 
 @st.cache_resource
