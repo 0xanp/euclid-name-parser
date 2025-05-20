@@ -23,7 +23,7 @@ if not GEMINI_API_KEY or not OPENAI_API_KEY:
 
 openai.api_key = OPENAI_API_KEY
 
-MODEL_NAME_GEMINI = "models/gemini-2.5-pro-preview-05-06"
+MODEL_NAME_GEMINI = "models/gemini-2.5-flash-preview-05-20"
 MODEL_NAME_GPT = "gpt-4.1"
 BATCH_SIZE = 50  # lower for interactive app
 
@@ -194,7 +194,7 @@ st.title("Name Split & Type Classifier (Dual LLM Audit)")
 existing_data = load_existing_parsed()
 address_lookup_available = not existing_data.empty
 
-st.write("Paste or upload a list of names. Each name is classified (Person/Business) and split (if Person) using Gemini 2.5 Pro, with uncertain cases re-audited by GPT-4.1. Address info is included if found in pre-parsed data.")
+st.write("Paste or upload a list of names. Each name is classified (Person/Business) and split (if Person) using Gemini 2.5 Flash, with uncertain cases re-audited by GPT-4.1. Address info is included if found in pre-parsed data.")
 
 input_method = st.radio("Input method", ["Paste names", "Upload CSV"])
 
