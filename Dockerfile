@@ -6,4 +6,4 @@ COPY . .
 
 RUN pip install -r requirements.txt
 
-CMD ["streamlit", "run", "parsed_names.py"]
+CMD ["streamlit", "run", "app.py"]
