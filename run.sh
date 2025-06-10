@@ -1,3 +1,4 @@
+git pull
 docker stop euclid-name-parser || true
 docker rm euclid-name-parser || true
 docker rmi euclid-name-parser || true
